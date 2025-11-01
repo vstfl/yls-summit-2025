@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "maplibre-gl": "^5.10.0",
-    "papaparse": "^5.5.3"
+    "papaparse": "^5.5.3",
+    "kdbush": "^4.0.2"
   }
 }
