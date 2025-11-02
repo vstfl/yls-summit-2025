@@ -39,16 +39,17 @@
     message: 'Select a region to view travel times.',
   }
   let travelTimeSummary = null
-  let isTravelTimeExpanded = true
+  let isTravelTimeExpanded = false
   let routeStatus = {
     state: 'idle',
     message: 'Select a stop to view a route to Kennedy Station.',
   }
   let routeSummary = null
   let selectedStopInfo = null
-  let isRouteExpanded = true
+  let isRouteExpanded = false
   let selectedEquityFactor = null
   let selectedEquityDetail = null
+  let populationMode = 'proportional'
 
   const equityOptions = [
     { id: 'age', label: 'Age', disabled: false },
@@ -176,6 +177,10 @@
 
   const toggleRoutePanel = () => {
     isRouteExpanded = !isRouteExpanded
+  }
+
+  const setPopulationMode = (mode) => {
+    populationMode = mode
   }
 
   $: isScarboroughActive = selectedRegion === 'scarborough'
@@ -408,6 +413,45 @@
             </div>
           </div>
         {/if}
+      </div>
+    {/if}
+
+    {#if selectedEquityFactor && selectedEquityDetail}
+      <div class="space-y-3 border-t border-slate-200/70 pt-4">
+        <h2 class="text-sm font-semibold uppercase text-slate-500">Dissemination Area Information</h2>
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Population Mode</span>
+          <div
+            class="inline-flex items-center rounded-full border border-slate-200 bg-white p-1 text-xs font-semibold text-slate-500 shadow-sm"
+            role="group"
+            aria-label="Population mode"
+          >
+            <button
+              type="button"
+              class={`rounded-full px-3 py-1 transition ${
+                populationMode === 'proportional'
+                  ? 'bg-blue-500 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-600'
+              }`}
+              on:click={() => setPopulationMode('proportional')}
+              aria-pressed={populationMode === 'proportional'}
+            >
+              Proportional
+            </button>
+            <button
+              type="button"
+              class={`rounded-full px-3 py-1 transition ${
+                populationMode === 'total'
+                  ? 'bg-blue-500 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-600'
+              }`}
+              on:click={() => setPopulationMode('total')}
+              aria-pressed={populationMode === 'total'}
+            >
+              Total
+            </button>
+          </div>
+        </div>
       </div>
     {/if}
 
