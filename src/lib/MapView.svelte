@@ -17,6 +17,7 @@
 
   export let selectedRegion = 'all'
   export let hoveredRegion = null
+  export let isCentroidVizEnabled = false
 
   const municipalitiesGeojsonUrl = new URL(
     '../../datasets/scarborough_shape/Former Municipality Boundaries Data - 4326.geojson',
@@ -1732,6 +1733,10 @@
 
   $: if (mapLoaded) {
     updateSelectedRegionState(selectedRegion)
+  }
+
+  $: if (mapLoaded && map.getLayer(DA_CENTROID_LAYER_ID)) {
+    map.setLayoutProperty(DA_CENTROID_LAYER_ID, 'visibility', isCentroidVizEnabled ? 'visible' : 'none');
   }
 </script>
 

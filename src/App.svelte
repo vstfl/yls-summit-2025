@@ -51,6 +51,7 @@
   let selectedEquityDetail = null
   let populationMode = 'proportional'
   let selectedDaInfo = null
+  let isCentroidVizEnabled = false
 
   const equityOptions = [
     { id: 'age', label: 'Age', disabled: false },
@@ -450,6 +451,40 @@
       <div class="space-y-3 border-t border-slate-200/70 pt-4">
         <h2 class="text-sm font-semibold uppercase text-slate-500">Dissemination Area Information</h2>
         <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Centroid Visualization</span>
+          <div
+            class="inline-flex items-center rounded-full border border-slate-200 bg-white p-1 text-xs font-semibold text-slate-500 shadow-sm"
+            role="group"
+            aria-label="Centroid visualization"
+          >
+            <button
+              type="button"
+              class={`rounded-full px-3 py-1 transition ${
+                isCentroidVizEnabled
+                  ? 'bg-blue-500 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-600'
+              }`}
+              on:click={() => (isCentroidVizEnabled = true)}
+              aria-pressed={isCentroidVizEnabled}
+            >
+              On
+            </button>
+            <button
+              type="button"
+              class={`rounded-full px-3 py-1 transition ${
+                !isCentroidVizEnabled
+                  ? 'bg-blue-500 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-600'
+              }`}
+              on:click={() => (isCentroidVizEnabled = false)}
+              aria-pressed={!isCentroidVizEnabled}
+            >
+              Off
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between">
           <span class="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Population Mode</span>
           <div
             class="inline-flex items-center rounded-full border border-slate-200 bg-white p-1 text-xs font-semibold text-slate-500 shadow-sm"
@@ -611,6 +646,7 @@
     <MapView
       {selectedRegion}
       {hoveredRegion}
+      {isCentroidVizEnabled}
       on:traveltimeupdate={handleTravelTimeUpdate}
       on:routeupdate={handleRouteUpdate}
       on:daupdate={handleDaUpdate}
