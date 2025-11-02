@@ -4,6 +4,7 @@
   import Papa from 'papaparse'
   import stopsUrl from '../../datasets/static_gtfs/stops.txt?url'
   import torontoBoundaryUrl from '../../datasets/toronto_shape/toronto_boundary.geojson?url'
+  import scarboroughDaUrl from '../../datasets/scarborough_da/Income_Proport_FeaturesToJSO.geojson?url'
   import { areaNameByRegionId, regionColorMap, torontoDefaultColor } from './regions.js'
   import KDBush from 'kdbush'
   import {
@@ -41,8 +42,14 @@
   const ROUTE_OUTLINE_LAYER_ID = 'scarborough-route-outline'
   const SELECTED_STOP_SOURCE_ID = 'scarborough-selected-stop'
   const SELECTED_STOP_LAYER_ID = 'scarborough-selected-stop-circle'
+  const DA_SOURCE_ID = 'scarborough-da'
+  const DA_FILL_LAYER_ID = 'scarborough-da-fill'
+  const DA_OUTLINE_LAYER_ID = 'scarborough-da-outline'
+  const DA_CENTROID_SOURCE_ID = 'scarborough-da-centroids'
+  const DA_CENTROID_LAYER_ID = 'scarborough-da-centroids-circle'
   const SCARBOROUGH_AREA_NAME = 'SCARBOROUGH'
   const TRAVEL_TIME_MINUTES_PROP = 'scarborough_travel_time_minutes'
+  const SENIORS_METRIC_PROP = 'seniors_metric'
   const TRAVEL_TIME_STATUS_PROP = 'scarborough_travel_time_status'
   const TRAVEL_TIME_BUCKET_PROP = 'scarborough_travel_time_bucket'
   const TRAVEL_TIME_SECONDS_PROP = 'scarborough_travel_time_seconds'
@@ -55,7 +62,7 @@
     { minutes: 75, color: '#ef4444', label: '75-90 min' },
   ]
   const travelTimeLegendUnreachable = { color: '#334155', label: 'Unreachable (>90 min)' }
-  const travelTimeCacheKey = `traveltime:${SCARBOROUGH_DESTINATION.id}:${ARRIVAL_TIME_ISO}`
+  const travelTimeCacheKey = `traveltime:scarborough-da:${ARRIVAL_TIME_ISO}`
   const maxTravelTimeMinutes = Math.round(MAX_TRAVEL_TIME_SECONDS / 60)
   const arrivalDateInstance = new Date(ARRIVAL_TIME_ISO)
   const arrivalDateFormatter = new Intl.DateTimeFormat('en-CA', {
@@ -104,7 +111,7 @@
   let regionStopsCache = {}
   let travelTimeStatus = {
     state: 'inactive',
-    message: 'Select a region to view travel times.',
+    message: 'Select the Scarborough region to view travel times.',
   }
   let travelTimeSummary = null
   let travelTimesActive = false
@@ -118,8 +125,18 @@
   let routeSummary = null
   let routeInFlightStopId = null
   let hoveredStopId = null
+  let daGeoJSON = null
+  let daCentroidCollection = null
+  let selectedDa = null
+  let selectedDaFeatureId = null
+  let seniorsMetricMin = null
+  let seniorsMetricMax = null
 
   const viewportPadding = 56
+
+  let handleDaClickOnMap
+  let handleDaMouseEnter
+  let handleDaMouseLeave
 
   const loadStops = async () => {
     const response = await fetch(stopsUrl)
@@ -164,6 +181,31 @@
     return response.json()
   }
 
+  const loadScarboroughDa = async () => {
+    const response = await fetch(scarboroughDaUrl)
+    return response.json()
+  }
+
+  const getDaIdentifier = (properties) => {
+    if (!properties) return null
+    const candidates = [
+      properties['Scarborough_Clip.DAUID'],
+      properties.DAUID,
+      properties.daId,
+      properties.da_id,
+      properties.DAUID_L,
+      properties.dauid,
+    ]
+
+    for (const value of candidates) {
+      if (value !== undefined && value !== null && `${value}`.length) {
+        return `${value}`
+      }
+    }
+
+    return null
+  }
+
   const buildRegionColorExpression = () => {
     const expression = ['match', ['get', 'AREA_NAME']]
 
@@ -175,7 +217,34 @@
     return expression
   }
 
-  const buildTravelTimeColorExpression = () => {
+  const buildSeniorsMetricColorExpression = (fallbackColor = '#2563eb') => {
+    if (seniorsMetricMin === null || seniorsMetricMax === null || seniorsMetricMin === seniorsMetricMax) {
+      return fallbackColor
+    }
+
+    const interpolate = [
+      'interpolate',
+      ['linear'],
+      ['coalesce', ['get', SENIORS_METRIC_PROP], 0],
+      seniorsMetricMin,
+      '#16a34a', // green
+      (seniorsMetricMin + seniorsMetricMax) / 2,
+      '#facc15', // yellow
+      seniorsMetricMax,
+      '#ef4444', // red
+    ]
+
+    return [
+      'case',
+      ['==', ['get', TRAVEL_TIME_STATUS_PROP], 'unreachable'],
+      travelTimeLegendUnreachable.color,
+      ['has', SENIORS_METRIC_PROP],
+      interpolate,
+      fallbackColor,
+    ]
+  }
+
+  const buildTravelTimeColorExpression = (fallbackColor = '#2563eb') => {
     const interpolate = ['interpolate', ['linear'], ['coalesce', ['get', TRAVEL_TIME_MINUTES_PROP], 0]]
 
     for (const stop of travelTimeRamp) {
@@ -188,7 +257,7 @@
       travelTimeLegendUnreachable.color,
       ['has', TRAVEL_TIME_MINUTES_PROP],
       interpolate,
-      '#2563eb',
+      fallbackColor,
     ]
   }
 
@@ -256,21 +325,98 @@
   const updateStopsVisualization = () => {
     if (!mapLoaded || !map?.getLayer(STOPS_LAYER_ID)) return
 
-    const useTravelTimes = travelTimesActive && Boolean(travelTimeSummary)
+    map.setPaintProperty(STOPS_LAYER_ID, 'circle-color', '#2563eb')
+    map.setPaintProperty(STOPS_LAYER_ID, 'circle-radius', buildRadiusExpression(false))
+    map.setPaintProperty(STOPS_LAYER_ID, 'circle-opacity', 0.8)
+    map.setPaintProperty(STOPS_LAYER_ID, 'circle-stroke-width', 1)
+    map.setPaintProperty(STOPS_LAYER_ID, 'circle-stroke-color', '#ffffff')
+  }
 
-    const circleColor = useTravelTimes ? buildTravelTimeColorExpression() : '#2563eb'
-    const circleRadius = buildRadiusExpression(useTravelTimes)
-    const circleOpacity = useTravelTimes ? ['case', ['has', TRAVEL_TIME_MINUTES_PROP], 0.92, 0.65] : 0.8
-    const circleStrokeWidth = useTravelTimes ? ['case', ['has', TRAVEL_TIME_MINUTES_PROP], 1.75, 1] : 1
-    const circleStrokeColor = useTravelTimes
-      ? ['case', ['==', ['get', TRAVEL_TIME_STATUS_PROP], 'unreachable'], '#0f172a', '#ffffff']
-      : '#ffffff'
+  const updateDaCentroidVisualization = () => {
+    if (!mapLoaded || !map?.getLayer(DA_CENTROID_LAYER_ID)) return
 
-    map.setPaintProperty(STOPS_LAYER_ID, 'circle-color', circleColor)
-    map.setPaintProperty(STOPS_LAYER_ID, 'circle-radius', circleRadius)
-    map.setPaintProperty(STOPS_LAYER_ID, 'circle-opacity', circleOpacity)
-    map.setPaintProperty(STOPS_LAYER_ID, 'circle-stroke-width', circleStrokeWidth)
-    map.setPaintProperty(STOPS_LAYER_ID, 'circle-stroke-color', circleStrokeColor)
+    const hasTravelTimes = travelTimesActive && Boolean(travelTimeSummary)
+    const useSeniorsMetric = seniorsMetricMin !== null && seniorsMetricMax !== null
+
+    const color = useSeniorsMetric
+      ? buildSeniorsMetricColorExpression('#1d4ed8')
+      : hasTravelTimes
+      ? buildTravelTimeColorExpression('#1d4ed8')
+      : '#1d4ed8'
+
+    const opacity = hasTravelTimes
+      ? ['case', ['has', TRAVEL_TIME_MINUTES_PROP], 0.9, 0.45]
+      : 0.45
+
+    map.setPaintProperty(DA_CENTROID_LAYER_ID, 'circle-color', color)
+    map.setPaintProperty(DA_CENTROID_LAYER_ID, 'circle-opacity', opacity)
+  }
+
+  const emitDaUpdate = () => {
+    dispatch('daupdate', {
+      da: selectedDa,
+    })
+  }
+
+  const setDaFeatureState = (featureId, selected) => {
+    if (!map?.getSource(DA_CENTROID_SOURCE_ID) || !featureId) return
+    try {
+      map.setFeatureState({ source: DA_CENTROID_SOURCE_ID, id: featureId }, { selected })
+    } catch (error) {
+      // ignore - feature may not be present in current source data yet
+    }
+  }
+
+  const clearSelectedDa = ({ silent = false } = {}) => {
+    if (selectedDaFeatureId) {
+      setDaFeatureState(selectedDaFeatureId, false)
+    }
+    selectedDaFeatureId = null
+    selectedDa = null
+    if (!silent) {
+      emitDaUpdate()
+    }
+    updateDaCentroidVisualization()
+  }
+
+  const selectDaFeature = (feature, { silent = false } = {}) => {
+    if (!feature) {
+      clearSelectedDa({ silent })
+      return
+    }
+
+    const featureId = feature.id ?? feature?.properties?.id
+    const props = { ...(feature?.properties ?? {}) }
+    if (!featureId) {
+      if (!silent) emitDaUpdate()
+      return
+    }
+
+    const canonicalId = props.daId ?? getDaIdentifier(props) ?? featureId
+
+    if (selectedDaFeatureId && selectedDaFeatureId !== featureId) {
+      setDaFeatureState(selectedDaFeatureId, false)
+    }
+
+    setDaFeatureState(featureId, true)
+    selectedDaFeatureId = featureId
+
+    selectedDa = {
+      featureId,
+      id: canonicalId,
+      label: props.name ?? canonicalId,
+      travelTimeMinutes: props[TRAVEL_TIME_MINUTES_PROP] ?? null,
+      travelTimeSeconds: props[TRAVEL_TIME_SECONDS_PROP] ?? null,
+      travelTimeStatus: props[TRAVEL_TIME_STATUS_PROP] ?? null,
+      rawProperties: props,
+      seniorsProportion: props['Scarborough_Clip.SeniorsProportion'],
+      coordinates: feature?.geometry?.coordinates ?? null,
+    }
+
+    if (!silent) {
+      emitDaUpdate()
+    }
+    updateDaCentroidVisualization()
   }
 
   const getCachedTravelTimes = () => {
@@ -313,13 +459,14 @@
     travelTimeSummary = nextSummary
     if (!nextSummary) {
       showLegend = false
+      clearDaTravelTimeData()
     }
-    updateStopsVisualization()
+    updateDaCentroidVisualization()
     emitTravelTimeUpdate()
   }
 
   const composeSuccessMessage = (summary) =>
-    `Travel times ready for ${summary.reachable} of ${summary.totalStops} stops (${summary.unreachable.length} unreachable).`
+    `Travel times ready for ${summary.reachable} of ${summary.totalStops} areas (${summary.unreachable.length} unreachable).`
 
   const updateSuccessStatusFromSummary = (summary) => {
     if (!summary || !travelTimesActive) return
@@ -478,39 +625,135 @@
     }
   }
 
-  const applyTravelTimesToStops = (records) => {
-    if (!fullStopsGeoJSON?.features?.length) return
+  const applyTravelTimesToDaCentroids = (records) => {
+    if (!daCentroidCollection?.features?.length) return
 
-    const entries = Object.entries(records ?? {})
-    const recordsMap = new Map(entries)
+    const recordsMap = new Map(Object.entries(records ?? {}))
 
-    for (const feature of fullStopsGeoJSON.features) {
-      const stopId = feature?.properties?.id
-      if (!stopId || !feature?.properties) continue
+    if (!daCentroidCollection?.features?.length) {
+      updateDaCentroidVisualization()
+      return
+    }
 
-      const record = recordsMap.get(stopId)
+    let minMetric = Infinity
+    let maxMetric = -Infinity
+
+    const updatedFeatures = daCentroidCollection.features.map((feature) => {
+      if (!feature?.properties) return feature
+      const id = feature.properties.id
+      const record = recordsMap.get(id)
+
+      const nextProperties = { ...(feature.properties ?? {}) }
+
+      // Clear old metric value
+      delete nextProperties[SENIORS_METRIC_PROP]
+
       if (record) {
         const minutes = Number.isFinite(record.travelTimeMinutes)
           ? Math.round(record.travelTimeMinutes * 10) / 10
           : null
 
-        feature.properties[TRAVEL_TIME_STATUS_PROP] = record.status
-        feature.properties[TRAVEL_TIME_SECONDS_PROP] = record.travelTimeSeconds
-        feature.properties[TRAVEL_TIME_MINUTES_PROP] = minutes
-        feature.properties[TRAVEL_TIME_BUCKET_PROP] = record.bucket
+        nextProperties[TRAVEL_TIME_STATUS_PROP] = record.status
+        nextProperties[TRAVEL_TIME_SECONDS_PROP] = record.travelTimeSeconds
+        nextProperties[TRAVEL_TIME_MINUTES_PROP] = minutes
+        nextProperties[TRAVEL_TIME_BUCKET_PROP] = record.bucket
+
+        const seniorsProportion = feature.properties['Scarborough_Clip.SeniorsProportion']
+        if (minutes !== null && Number.isFinite(seniorsProportion)) {
+          const metric = minutes * seniorsProportion
+          nextProperties[SENIORS_METRIC_PROP] = metric
+          if (metric < minMetric) minMetric = metric
+          if (metric > maxMetric) maxMetric = metric
+        }
+
       } else {
-        delete feature.properties[TRAVEL_TIME_STATUS_PROP]
-        delete feature.properties[TRAVEL_TIME_SECONDS_PROP]
-        delete feature.properties[TRAVEL_TIME_MINUTES_PROP]
-        delete feature.properties[TRAVEL_TIME_BUCKET_PROP]
+        delete nextProperties[TRAVEL_TIME_STATUS_PROP]
+        delete nextProperties[TRAVEL_TIME_SECONDS_PROP]
+        delete nextProperties[TRAVEL_TIME_MINUTES_PROP]
+        delete nextProperties[TRAVEL_TIME_BUCKET_PROP]
+      }
+
+      return {
+        ...feature,
+        properties: nextProperties,
+      }
+    })
+
+    seniorsMetricMin = minMetric === Infinity ? null : minMetric
+    seniorsMetricMax = maxMetric === -Infinity ? null : maxMetric
+
+    daCentroidCollection = {
+      ...daCentroidCollection,
+      features: updatedFeatures,
+    }
+
+    const centroidSource = map?.getSource(DA_CENTROID_SOURCE_ID)
+    if (centroidSource) {
+      centroidSource.setData(daCentroidCollection)
+    }
+
+    if (selectedDaFeatureId) {
+      const nextFeature = daCentroidCollection.features.find((feature) => {
+        const featureId = feature.id ?? feature?.properties?.id
+        return featureId === selectedDaFeatureId
+      })
+
+      if (nextFeature) {
+        selectDaFeature(nextFeature, { silent: false })
+      } else {
+        clearSelectedDa()
+      }
+    } else {
+      updateDaCentroidVisualization()
+    }
+  }
+
+  const clearDaTravelTimeData = () => {
+    clearSelectedDa({ silent: true })
+
+    seniorsMetricMin = null
+    seniorsMetricMax = null
+
+    if (daCentroidCollection?.features) {
+      const clearedCentroids = daCentroidCollection.features.map((feature) => {
+        const properties = { ...(feature?.properties ?? {}) }
+        delete properties[TRAVEL_TIME_STATUS_PROP]
+        delete properties[TRAVEL_TIME_SECONDS_PROP]
+        delete properties[TRAVEL_TIME_MINUTES_PROP]
+        delete properties[TRAVEL_TIME_BUCKET_PROP]
+        delete properties[SENIORS_METRIC_PROP]
+        return {
+          ...feature,
+          properties,
+        }
+      })
+
+      daCentroidCollection = {
+        ...daCentroidCollection,
+        features: clearedCentroids,
+      }
+
+      const centroidSource = map?.getSource(DA_CENTROID_SOURCE_ID)
+      if (centroidSource) {
+        centroidSource.setData(daCentroidCollection)
       }
     }
 
-    regionStopsCache = {}
-    lastAppliedStopsArea = undefined
+    updateDaCentroidVisualization()
+    emitDaUpdate()
+  }
 
-    const currentAreaName = areaNameByRegionId[selectedRegion]
-    updateStopsDataset(currentAreaName ?? null)
+  const requestTravelTimesIfReady = () => {
+    if (!travelTimesActive) return
+    if (travelTimesRequested) return
+    if (!daCentroidCollection?.features?.length) return
+
+    travelTimesRequested = true
+    loadScarboroughTravelTimes()
+      .catch(() => {})
+      .finally(() => {
+        updateDaCentroidVisualization()
+      })
   }
 
   const loadScarboroughTravelTimes = async () => {
@@ -523,37 +766,37 @@
       return
     }
 
-    const cached = getCachedTravelTimes()
-    if (cached) {
-      applyTravelTimesToStops(cached.records)
-      setTravelTimeSummary(cached)
-      setTravelTimeStatus({
-        state: 'cached',
-        message: `Loaded cached travel times for ${cached.reachable ?? 0} of ${cached.totalStops ?? 0} stops.`,
-      })
-      return
-    }
-
-    const scarboroughCollection = buildRegionStopsCollection(SCARBOROUGH_AREA_NAME)
-    const scarboroughStops = scarboroughCollection?.features ?? []
-
-    if (!scarboroughStops.length) {
+    if (!daCentroidCollection?.features?.length) {
       setTravelTimeSummary(null)
       setTravelTimeStatus({
         state: 'empty',
-        message: 'No Scarborough stops available for TravelTime requests.',
+        message: 'No dissemination areas available for TravelTime requests.',
       })
       travelTimesRequested = false
       return
     }
 
+    const cached = getCachedTravelTimes()
+    if (cached) {
+      applyTravelTimesToDaCentroids(cached.records)
+      setTravelTimeSummary(cached)
+      setTravelTimeStatus({
+        state: 'cached',
+        message: `Loaded cached travel times for ${cached.reachable ?? 0} of ${cached.totalStops ?? 0} areas.`,
+      })
+      updateDaCentroidVisualization()
+      return
+    }
+
+    const centroids = daCentroidCollection.features
+
     setTravelTimeStatus({
       state: 'loading',
-      message: `Requesting travel times for ${scarboroughStops.length} Scarborough stops…`,
+      message: `Requesting travel times for ${centroids.length} dissemination areas…`,
     })
 
     try {
-      const result = await fetchTravelTimesForStops(scarboroughStops, {
+      const result = await fetchTravelTimesForStops(centroids, {
         batchSize: 100,
         onProgress: ({ batchIndex, totalBatches, stage }) => {
           const batchNumber = batchIndex + 1
@@ -568,9 +811,10 @@
       })
 
       setTravelTimeSummary(result)
-      applyTravelTimesToStops(result.records)
+      applyTravelTimesToDaCentroids(result.records)
       setCachedTravelTimes(result)
       updateSuccessStatusFromSummary(result)
+      updateDaCentroidVisualization()
     } catch (error) {
       console.error('Failed to load TravelTime data', error)
       travelTimesRequested = false
@@ -587,34 +831,28 @@
     travelTimesActive = shouldEnable
 
     if (!shouldEnable) {
-      showLegend = false
-      updateStopsVisualization()
+      travelTimesRequested = false
+      setTravelTimeSummary(null)
       setTravelTimeStatus({
         state: 'inactive',
-        message: 'Select a region to view travel times.',
+        message: 'Select the Scarborough region to view travel times.',
       })
       clearRoute({ preserveStop: false, statusMessage: 'Select a stop to view a route to Kennedy Station.' })
       return
     }
 
-    updateStopsVisualization()
+    updateDaCentroidVisualization()
 
     if (travelTimeSummary) {
       updateSuccessStatusFromSummary(travelTimeSummary)
     }
 
-    if (!travelTimesRequested) {
-      travelTimesRequested = true
-      loadScarboroughTravelTimes()
-        .catch(() => {})
-        .finally(() => {
-          updateStopsVisualization()
-        })
-    }
+    requestTravelTimesIfReady()
   }
 
   emitTravelTimeUpdate()
   emitRouteUpdate()
+  emitDaUpdate()
 
   const computeGeometryBounds = (geometry) => {
     if (!geometry?.coordinates) return null
@@ -683,6 +921,138 @@
     }
 
     return metadata
+  }
+
+  const centroidOfRing = (ring) => {
+    if (!Array.isArray(ring) || ring.length < 3) {
+      return { area: 0, centroid: [0, 0] }
+    }
+
+    let twiceArea = 0
+    let cx = 0
+    let cy = 0
+
+    for (let i = 0; i < ring.length - 1; i += 1) {
+      const [x0, y0] = ring[i]
+      const [x1, y1] = ring[i + 1]
+      const cross = x0 * y1 - x1 * y0
+      twiceArea += cross
+      cx += (x0 + x1) * cross
+      cy += (y0 + y1) * cross
+    }
+
+    const area = twiceArea / 2
+    if (area === 0) {
+      return { area: 0, centroid: ring[0] ?? [0, 0] }
+    }
+
+    return {
+      area,
+      centroid: [cx / (3 * twiceArea), cy / (3 * twiceArea)],
+    }
+  }
+
+  const centroidOfPolygon = (rings) => {
+    if (!Array.isArray(rings) || !rings.length) return { centroid: null, area: 0 }
+
+    let totalArea = 0
+    let sumX = 0
+    let sumY = 0
+
+    for (let i = 0; i < rings.length; i += 1) {
+      const { area, centroid } = centroidOfRing(rings[i])
+      if (!Number.isFinite(area) || !Number.isFinite(centroid?.[0]) || !Number.isFinite(centroid?.[1])) {
+        continue
+      }
+
+      totalArea += area
+      sumX += centroid[0] * area
+      sumY += centroid[1] * area
+    }
+
+    if (totalArea === 0) {
+      const bounds = computeGeometryBounds({ type: 'Polygon', coordinates: rings })
+      if (!bounds) return { centroid: null, area: 0 }
+      const [[minX, minY], [maxX, maxY]] = bounds
+      return {
+        centroid: [(minX + maxX) / 2, (minY + maxY) / 2],
+        area: 0,
+      }
+    }
+
+    return {
+      centroid: [sumX / totalArea, sumY / totalArea],
+      area: totalArea,
+    }
+  }
+
+  const computeDisseminationAreaCentroids = (geojson) => {
+    if (!geojson?.features) return emptyFeatureCollection
+
+    const centroidFeatures = []
+
+    geojson.features.forEach((feature, index) => {
+      const canonicalId = getDaIdentifier(feature?.properties) ?? `${index}`
+      const travelId = `da-${canonicalId}`
+      const geometry = feature?.geometry
+
+      if (!geometry) return
+
+      let centroid = null
+
+      if (geometry.type === 'Polygon') {
+        const { centroid: polygonCentroid } = centroidOfPolygon(geometry.coordinates)
+        centroid = polygonCentroid
+      } else if (geometry.type === 'MultiPolygon') {
+        let totalArea = 0
+        let sumX = 0
+        let sumY = 0
+
+        for (const polygon of geometry.coordinates ?? []) {
+          const { centroid: polygonCentroid, area } = centroidOfPolygon(polygon)
+          if (!polygonCentroid || area === 0) continue
+          totalArea += area
+          sumX += polygonCentroid[0] * area
+          sumY += polygonCentroid[1] * area
+        }
+
+        if (totalArea !== 0) {
+          centroid = [sumX / totalArea, sumY / totalArea]
+        }
+      }
+
+      if (!centroid) {
+        const bounds = computeGeometryBounds(geometry)
+        if (bounds) {
+          const [[minX, minY], [maxX, maxY]] = bounds
+          centroid = [(minX + maxX) / 2, (minY + maxY) / 2]
+        }
+      }
+
+      if (!centroid || !Number.isFinite(centroid[0]) || !Number.isFinite(centroid[1])) {
+        return
+      }
+
+      centroidFeatures.push({
+        type: 'Feature',
+        id: travelId,
+        geometry: {
+          type: 'Point',
+          coordinates: centroid,
+        },
+        properties: {
+          ...(feature?.properties ?? {}),
+          id: travelId,
+          daId: canonicalId,
+          name: feature?.properties?.NAME ?? canonicalId,
+        },
+      })
+    })
+
+    return {
+      type: 'FeatureCollection',
+      features: centroidFeatures,
+    }
   }
 
   const buildStopsIndex = (geojson) => {
@@ -946,10 +1316,14 @@
     map.setLayoutProperty('toronto-region-highlight-outline', 'visibility', 'visible')
     map.setPaintProperty('toronto-boundary-fill', 'fill-opacity', 0.08)
     map.setPaintProperty('toronto-region-highlight-fill', 'fill-opacity', 0.05)
-   map.setPaintProperty('toronto-region-highlight-outline', 'line-opacity', 0.85)
-   updateStopsDataset(areaName)
+    map.setPaintProperty('toronto-region-highlight-outline', 'line-opacity', 0.85)
+    updateStopsDataset(areaName)
 
-    handleTravelTimeActivation(true)
+    if (areaName === SCARBOROUGH_AREA_NAME) {
+      handleTravelTimeActivation(true)
+    } else {
+      handleTravelTimeActivation(false)
+    }
 
     const metadata = regionMetadata[areaName]
 
@@ -981,13 +1355,15 @@
 
     map.on('load', async () => {
       try {
-        const [boundaryGeoJSON, stopsGeoJSON, regionsGeoJSON] = await Promise.all([
+        const [boundaryGeoJSON, stopsGeoJSON, regionsGeoJSON, scarboroughDaGeoJSON] = await Promise.all([
           loadBoundary(),
           loadStops(),
           loadRegions(),
+          loadScarboroughDa(),
         ])
 
         regionColorExpression = buildRegionColorExpression()
+        daGeoJSON = scarboroughDaGeoJSON
 
         const boundaryFeatures = boundaryGeoJSON?.features ?? []
         const boundaryGeometry = boundaryFeatures.length > 0 ? boundaryFeatures[0].geometry : boundaryGeoJSON?.geometry
@@ -1055,6 +1431,85 @@
           },
         })
 
+        if (daGeoJSON) {
+          daCentroidCollection = computeDisseminationAreaCentroids(daGeoJSON)
+
+          map.addSource(DA_SOURCE_ID, {
+            type: 'geojson',
+            data: daGeoJSON,
+          })
+
+          map.addLayer({
+            id: DA_FILL_LAYER_ID,
+            type: 'fill',
+            source: DA_SOURCE_ID,
+            paint: {
+              'fill-color': '#94a3b8',
+              'fill-opacity': 0.18,
+            },
+          })
+
+          map.addLayer({
+            id: DA_OUTLINE_LAYER_ID,
+            type: 'line',
+            source: DA_SOURCE_ID,
+            paint: {
+              'line-color': '#475569',
+              'line-width': 1,
+              'line-opacity': 0.45,
+            },
+          })
+
+          map.addSource(DA_CENTROID_SOURCE_ID, {
+            type: 'geojson',
+            data: daCentroidCollection ?? emptyFeatureCollection,
+          })
+
+          map.addLayer({
+            id: DA_CENTROID_LAYER_ID,
+            type: 'circle',
+            source: DA_CENTROID_SOURCE_ID,
+            paint: {
+              'circle-radius': [
+                'interpolate',
+                ['linear'],
+                ['zoom'],
+                10,
+                ['case', ['boolean', ['feature-state', 'selected'], false], 6, 3.5],
+                14,
+                ['case', ['boolean', ['feature-state', 'selected'], false], 9, 6],
+                16,
+                ['case', ['boolean', ['feature-state', 'selected'], false], 12, 8.5],
+              ],
+              'circle-color': '#1d4ed8',
+              'circle-opacity': 0.45,
+              'circle-stroke-color': '#ffffff',
+              'circle-stroke-width': ['case', ['boolean', ['feature-state', 'selected'], false], 2.2, 1.1],
+            },
+          })
+
+          handleDaClickOnMap = (event) => {
+            const feature = event?.features?.[0]
+            if (!feature) return
+            selectDaFeature(feature)
+          }
+
+          handleDaMouseEnter = () => {
+            map.getCanvas().style.cursor = 'pointer'
+          }
+
+          handleDaMouseLeave = () => {
+            map.getCanvas().style.cursor = ''
+          }
+
+          map.on('click', DA_CENTROID_LAYER_ID, handleDaClickOnMap)
+          map.on('mouseenter', DA_CENTROID_LAYER_ID, handleDaMouseEnter)
+          map.on('mouseleave', DA_CENTROID_LAYER_ID, handleDaMouseLeave)
+
+          updateDaCentroidVisualization()
+          requestTravelTimesIfReady()
+        }
+
         map.addLayer({
           id: 'toronto-region-highlight-fill',
           type: 'fill',
@@ -1104,6 +1559,7 @@
 
         mapLoaded = true
         updateStopsVisualization()
+        updateDaCentroidVisualization()
 
         map.addSource(ROUTE_SOURCE_ID, {
           type: 'geojson',
@@ -1254,6 +1710,18 @@
 
     return () => {
       window.removeEventListener('resize', handleResize)
+      if (handleDaClickOnMap) {
+        map?.off('click', DA_CENTROID_LAYER_ID, handleDaClickOnMap)
+        handleDaClickOnMap = null
+      }
+      if (handleDaMouseEnter) {
+        map?.off('mouseenter', DA_CENTROID_LAYER_ID, handleDaMouseEnter)
+        handleDaMouseEnter = null
+      }
+      if (handleDaMouseLeave) {
+        map?.off('mouseleave', DA_CENTROID_LAYER_ID, handleDaMouseLeave)
+        handleDaMouseLeave = null
+      }
       map?.remove()
     }
   })

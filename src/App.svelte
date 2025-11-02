@@ -50,6 +50,7 @@
   let selectedEquityFactor = null
   let selectedEquityDetail = null
   let populationMode = 'proportional'
+  let selectedDaInfo = null
 
   const equityOptions = [
     { id: 'age', label: 'Age', disabled: false },
@@ -136,6 +137,11 @@
     isEquityDetailMenuOpen = false
   }
 
+  const handleDaUpdate = (event) => {
+    const detail = event?.detail ?? {}
+    selectedDaInfo = detail?.da ?? null
+  }
+
   const handleTravelTimeUpdate = (event) => {
     const detail = event?.detail ?? {}
     if (detail.status) {
@@ -193,6 +199,30 @@
   }
 
   $: selectedOption = regionById[selectedRegion]
+
+  $: selectedEquityDetailLabel =
+    selectedEquityFactor && selectedEquityDetail && equityDetailByFactor[selectedEquityFactor]
+      ? equityDetailByFactor[selectedEquityFactor].find((option) => option.id === selectedEquityDetail)?.label ?? null
+      : null
+
+  const describeDaTravelTime = (info) => {
+    if (!info) return 'Select a centroid'
+
+    if (info.travelTimeStatus === 'unreachable') {
+      return '>90 min (Unreachable)'
+    }
+
+    if (Number.isFinite(info.travelTimeMinutes)) {
+      const minutes = Math.round(info.travelTimeMinutes * 10) / 10
+      return `${minutes} min`
+    }
+
+    if (travelTimeStatus?.state === 'loading') {
+      return 'Pending…'
+    }
+
+    return 'Unavailable'
+  }
 </script>
 
 <main class="flex h-full min-h-0 w-full flex-1 flex-col gap-6 p-6 lg:flex-row lg:gap-10">
@@ -452,6 +482,43 @@
             </button>
           </div>
         </div>
+
+        {#if selectedDaInfo}
+          <div class="rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-600 shadow-sm">
+            <div class="flex items-center justify-between text-[11px] uppercase tracking-[0.25em] text-slate-400">
+              <span>Selected Area</span>
+              <span class="tracking-normal text-slate-600">{selectedDaInfo.label ?? selectedDaInfo.id}</span>
+            </div>
+
+            <dl class="mt-3 space-y-2">
+              <div class="flex items-center justify-between">
+                <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Travel Time</dt>
+                <dd class="text-sm font-medium text-slate-800">{describeDaTravelTime(selectedDaInfo)}</dd>
+              </div>
+
+              {#if selectedDaInfo?.seniorsProportion !== undefined && selectedDaInfo?.seniorsProportion !== null}
+                <div class="flex items-center justify-between">
+                  <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Seniors Proportion</dt>
+                  <dd class="text-sm font-medium text-slate-800">{Math.round(selectedDaInfo.seniorsProportion * 100)}%</dd>
+                </div>
+              {/if}
+
+              {#if selectedEquityFactor === 'age' && selectedEquityDetailLabel}
+                <div class="flex items-center justify-between">
+                  <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Age {selectedEquityDetailLabel} Travel Time</dt>
+                  <dd class="text-sm font-medium text-slate-800">{describeDaTravelTime(selectedDaInfo)}</dd>
+                </div>
+              {:else if selectedEquityFactor === 'income' && selectedEquityDetailLabel}
+                <div class="flex items-center justify-between">
+                  <dt class="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-500">Income {selectedEquityDetailLabel} Travel Time</dt>
+                  <dd class="text-sm font-medium text-slate-800">{describeDaTravelTime(selectedDaInfo)}</dd>
+                </div>
+              {/if}
+            </dl>
+          </div>
+        {:else}
+          <p class="text-xs text-slate-500">Click a centroid to view travel time details.</p>
+        {/if}
       </div>
     {/if}
 
@@ -519,10 +586,10 @@
           <p class="mt-1 text-xs text-slate-500">
             Destination: {SCARBOROUGH_DESTINATION.label}
           </p>
-          {#if travelTimeSummary && selectedRegion !== 'all'}
+          {#if travelTimeSummary && selectedRegion === 'scarborough'}
             <div class="mt-3 flex flex-wrap gap-3 text-xs text-slate-600">
-              <span class="rounded-full bg-white px-3 py-1 shadow-sm">Reachable {travelTimeSummary.reachable}/{travelTimeSummary.totalStops}</span>
-              <span class="rounded-full bg-white px-3 py-1 shadow-sm">Unreachable {travelTimeSummary.unreachable.length}</span>
+              <span class="rounded-full bg-white px-3 py-1 shadow-sm">Reachable areas {travelTimeSummary.reachable}/{travelTimeSummary.totalStops}</span>
+              <span class="rounded-full bg-white px-3 py-1 shadow-sm">Unreachable areas {travelTimeSummary.unreachable.length}</span>
             </div>
           {/if}
         </div>
@@ -546,6 +613,7 @@
       {hoveredRegion}
       on:traveltimeupdate={handleTravelTimeUpdate}
       on:routeupdate={handleRouteUpdate}
+      on:daupdate={handleDaUpdate}
     />
   </section>
 </main>
