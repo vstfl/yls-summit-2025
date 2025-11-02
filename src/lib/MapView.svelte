@@ -201,11 +201,11 @@
         ['linear'],
         ['zoom'],
         10,
-        ['case', isHovered, 5.85, 4.5],
+        ['case', isHovered, 4.39, 3.38],
         14,
-        ['case', isHovered, 10.4, 8],
+        ['case', isHovered, 7.8, 6],
         16,
-        ['case', isHovered, 15.6, 12],
+        ['case', isHovered, 11.7, 9],
       ]
     }
 
@@ -214,11 +214,11 @@
       ['linear'],
       ['zoom'],
       10,
-      ['case', isHovered, 2.8, 2],
+      ['case', isHovered, 2.1, 1.5],
       14,
-      ['case', isHovered, 8.4, 6],
+      ['case', isHovered, 6.3, 4.5],
       16,
-      ['case', isHovered, 11.2, 10],
+      ['case', isHovered, 8.4, 7.5],
     ]
   }
 
